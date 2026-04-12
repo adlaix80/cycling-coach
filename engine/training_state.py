@@ -14,8 +14,11 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 import numpy as np
 
-STATE_PATH = "data/coaching_state.json"
-ACTIVITY_LOG_PATH = "data/activity_log.json"
+import os as _os
+# Use Railway persistent volume if available, otherwise local data folder
+_DATA_DIR = _os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", _os.path.join(_os.path.dirname(__file__), "..", "data"))
+STATE_PATH = _os.path.join(_DATA_DIR, "coaching_state.json")
+ACTIVITY_LOG_PATH = _os.path.join(_DATA_DIR, "activity_log.json")
 
 
 def _load_json(path: str, default) -> dict | list:

@@ -192,8 +192,9 @@ class TelegramBot:
         # Download the file
         file = await context.bot.get_file(doc.file_id)
         ext = Path(doc.file_name).suffix.lower()
-        save_path = f"data/dossier/upload{ext}"
-        os.makedirs("data/dossier", exist_ok=True)
+        data_dir = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "data")
+        save_path = f"{data_dir}/dossier/upload{ext}"
+        os.makedirs(f"{data_dir}/dossier", exist_ok=True)
         await file.download_to_drive(save_path)
 
         try:

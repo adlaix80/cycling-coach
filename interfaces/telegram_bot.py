@@ -276,8 +276,60 @@ class TelegramBot:
             self.state.update_availability(availability_changes)
             logger.info(f"Availability updated: {availability_changes}")
 
-        reply = engine.chat(text)
+        # ── Pull live Strava + Garmin data before every response ──────────────
+        # This means the coach always has current data during conversation,
+        # not just during the automated morning briefing.
+        live_context = await self._fetch_live_data()
+
+        reply = engine.chat(text, garmin_metrics=live_context.get("garmin"),
+                            live_strava=live_context.get("strava"))
         await self._send(update, reply)
+
+    async def _fetch_live_data(self) -> dict:
+        """
+        Pull fresh Strava and Garmin data in the background before responding.
+        Returns whatever is available — silently ignores failures so a bad
+        API connection never blocks the conversation.
+        """
+        import asyncio
+        result = {}
+        ftp = self.state.get_current_ftp() or 200
+
+        # Run both fetches concurrently so it's fast
+        async def fetch_strava():
+            try:
+                from clients.strava_client import StravaClient
+                strava = StravaClient()
+                summary = await asyncio.to_thread(strava.get_28_day_summary, ftp)
+                recent = await asyncio.to_thread(strava.get_recent_activities, 7)
+                # Log any new activities
+                for a in summary.get("activities", []):
+                    self.state.log_activity(a)
+                self.state.recalculate_pmc()
+                result["strava"] = {
+                    "recent_activities": recent[:5],  # last 5 rides
+                    "28_day_summary": summary,
+                }
+                logger.info("[LiveData] Strava fetched")
+            except Exception as e:
+                logger.warning(f"[LiveData] Strava fetch skipped: {e}")
+
+        async def fetch_garmin():
+            try:
+                from clients.garmin_client import GarminClient
+                garmin = GarminClient()
+                metrics = await asyncio.to_thread(garmin.get_todays_metrics)
+                if metrics.get("ftp_estimate_w"):
+                    self.state.record_ftp(metrics["ftp_estimate_w"], source="garmin")
+                if metrics.get("vo2max"):
+                    self.state.record_vo2max(metrics["vo2max"], source="garmin")
+                result["garmin"] = metrics
+                logger.info("[LiveData] Garmin fetched")
+            except Exception as e:
+                logger.warning(f"[LiveData] Garmin fetch skipped: {e}")
+
+        await asyncio.gather(fetch_strava(), fetch_garmin())
+        return result
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 

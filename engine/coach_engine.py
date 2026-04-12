@@ -59,12 +59,32 @@ class CoachEngine:
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     def _build_context_block(self, garmin_metrics: dict = None, yesterday_activity: dict = None,
-                              recent_summary: dict = None) -> str:
+                              recent_summary: dict = None, live_strava: dict = None) -> str:
         """Assembles the full context payload appended to every user message."""
         lines = [
             "--- COACHING CONTEXT ---",
             self.state.get_full_profile_summary(),
         ]
+
+        # Live Strava data (from conversational pulls)
+        if live_strava:
+            recent = live_strava.get("recent_activities", [])
+            summary = live_strava.get("28_day_summary", {})
+            if recent:
+                lines += ["", "=== RECENT ACTIVITIES (LIVE FROM STRAVA) ==="]
+                for a in recent[:5]:
+                    lines.append(
+                        f"  {a.get('date')} | {a.get('name')} | "
+                        f"{a.get('duration_min')}min | NP: {a.get('weighted_avg_power_w')}W | "
+                        f"TSS: {a.get('tss')} | Indoor: {a.get('trainer')}"
+                    )
+            if summary:
+                lines += [
+                    "",
+                    f"28-day totals: {summary.get('total_activities')} rides | "
+                    f"{summary.get('total_hours')}h | TSS: {summary.get('total_tss')} | "
+                    f"Avg weekly TSS: {summary.get('avg_weekly_tss')}",
+                ]
 
         if yesterday_activity:
             lines += [
@@ -142,12 +162,17 @@ Keep it concise — I'm reading this on my phone before training."""
         )
         return response.content[0].text
 
-    def chat(self, user_message: str, garmin_metrics: dict = None) -> str:
+    def chat(self, user_message: str, garmin_metrics: dict = None,
+             live_strava: dict = None) -> str:
         """
         Handle a conversational message from the athlete.
         Maintains rolling conversation history.
+        live_strava: freshly pulled Strava data {recent_activities, 28_day_summary}
         """
-        context = self._build_context_block(garmin_metrics=garmin_metrics)
+        context = self._build_context_block(
+            garmin_metrics=garmin_metrics,
+            live_strava=live_strava,
+        )
         
         # Build messages array with history + context injection
         history = self.state.get_conversation_history(last_n=20)

@@ -1,0 +1,53 @@
+coaching:
+  # Claude model to use
+  model: "claude-sonnet-4-20250514"
+  
+  # How many conversation turns to keep in context window
+  conversation_history_turns: 20
+  
+  # Daily briefing time (24h format, local server time)
+  briefing_time: "07:00"
+  
+  # Days to look back for activity summary
+  activity_lookback_days: 28
+
+training:
+  # CTL/ATL time constants (days) — standard PMC values
+  ctl_time_constant: 42
+  atl_time_constant: 7
+  
+  # TSB thresholds
+  tsb_freshness_threshold: 5        # Above this = fresh/recovered
+  tsb_fatigue_threshold: -30        # Below this = accumulated fatigue warning
+  
+  # FTP-based power zones (% of FTP)
+  zones:
+    z1_max: 0.55    # Active recovery
+    z2_max: 0.75    # Endurance
+    z3_max: 0.90    # Tempo
+    z4_max: 1.05    # Threshold
+    z5_max: 1.20    # VO2max
+    z6_max: 1.50    # Anaerobic
+    # Z7: neuromuscular / sprint (above Z6)
+
+  # Typical session types
+  session_types:
+    - recovery
+    - endurance
+    - tempo
+    - sweet_spot
+    - threshold
+    - vo2max
+    - anaerobic
+    - long_ride
+    - race
+
+  # Ramp rate limits (TSS per week increase)
+  max_weekly_tss_increase_pct: 0.10   # 10% rule
+
+notifications:
+  # Send morning briefing even on rest days
+  briefing_on_rest_days: true
+  
+  # Alert if no activity detected when one was planned
+  missed_session_alert: true

@@ -15,7 +15,6 @@ from engine.training_state import TrainingState
 from engine.coach_engine import CoachEngine
 from engine.plan_builder import PlanBuilder
 from clients.strava_client import StravaClient
-from clients.garmin_client import GarminClient
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +42,8 @@ def run_weekly_review(training_state: TrainingState, send_fn=None):
     except Exception as e:
         logger.error(f"[Weekly Review] Strava error: {e}")
 
-    # ── Pull latest Garmin metrics ─────────────────────────────────────────────
-    garmin_metrics = None
-    try:
-        garmin = GarminClient()
-        garmin_metrics = garmin.get_todays_metrics()
-        if garmin_metrics.get("ftp_estimate_w"):
-            training_state.record_ftp(garmin_metrics["ftp_estimate_w"], source="garmin")
-        if garmin_metrics.get("vo2max"):
-            training_state.record_vo2max(garmin_metrics["vo2max"], source="garmin")
-    except Exception as e:
-        logger.error(f"[Weekly Review] Garmin error: {e}")
+    # ── Use last saved Garmin metrics (from manual entry) ──────────────────────
+    garmin_metrics = training_state.state.get("last_garmin_metrics")
 
     # ── Recalculate PMC ────────────────────────────────────────────────────────
     training_state.recalculate_pmc()

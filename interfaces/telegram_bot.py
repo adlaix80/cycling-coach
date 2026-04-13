@@ -167,8 +167,11 @@ class TelegramBot:
             "/metrics — Latest FTP and VO2max readings\n"
             "/update — Change availability or goals\n"
             "/help — This menu\n\n"
-            "Or just *chat naturally* — ask me anything about your training, "
-            "request plan adjustments, or tell me about changes to your schedule."
+            "*Logging Garmin metrics manually:*\n"
+            "Just send a message containing your metrics, e.g:\n"
+            "_'HRV 52 balanced, sleep 7.5h score 81, readiness 74, resting HR 47'_\n"
+            "I'll save them and use them in coaching.\n\n"
+            "Or just *chat naturally* — ask anything about your training."
         )
 
     # ─── Document upload (dossier) ─────────────────────────────────────────────
@@ -271,65 +274,87 @@ class TelegramBot:
         # ── Normal conversational coaching ────────────────────────────────────
         engine = CoachEngine(self.state)
 
-        # Check for availability/goal update intent and apply to state
+        # Check for availability/goal update intent
         availability_changes = engine.parse_availability_update(text)
         if availability_changes:
             self.state.update_availability(availability_changes)
             logger.info(f"Availability updated: {availability_changes}")
 
-        # ── Pull live Strava + Garmin data before every response ──────────────
-        # This means the coach always has current data during conversation,
-        # not just during the automated morning briefing.
-        live_context = await self._fetch_live_data()
+        # Check if this is a manual Garmin metrics entry
+        garmin_keywords = ["hrv", "sleep score", "readiness", "resting hr",
+                           "body battery", "vo2max", "log garmin"]
+        if any(kw in text.lower() for kw in garmin_keywords):
+            await self._handle_garmin_manual_input(update, text)
+            return
 
-        reply = engine.chat(text, garmin_metrics=live_context.get("garmin"),
+        # Pull live Strava data before responding
+        live_context = await self._fetch_live_strava()
+
+        # Use last saved Garmin metrics
+        garmin_metrics = self.state.state.get("last_garmin_metrics")
+
+        reply = engine.chat(text, garmin_metrics=garmin_metrics,
                             live_strava=live_context.get("strava"))
         await self._send(update, reply)
 
-    async def _fetch_live_data(self) -> dict:
-        """
-        Pull fresh Strava and Garmin data in the background before responding.
-        Returns whatever is available — silently ignores failures so a bad
-        API connection never blocks the conversation.
-        """
+    async def _handle_garmin_manual_input(self, update, text: str):
+        """Parse and store manually entered Garmin metrics."""
+        try:
+            from clients.garmin_client import parse_manual_garmin_input
+            metrics = parse_manual_garmin_input(text, None)
+            # Save to state
+            self.state.state["last_garmin_metrics"] = metrics
+            # Update FTP and VO2max if provided
+            if metrics.get("ftp_estimate_w"):
+                self.state.record_ftp(metrics["ftp_estimate_w"], source="manual")
+            if metrics.get("vo2max"):
+                self.state.record_vo2max(metrics["vo2max"], source="manual")
+            self.state.save()
+
+            # Confirm what was saved
+            saved = []
+            if metrics.get("hrv_status"): saved.append(f"HRV: {metrics['hrv_status']}")
+            if metrics.get("hrv_last_night_ms"): saved.append(f"HRV ms: {metrics['hrv_last_night_ms']}")
+            if metrics.get("sleep_score"): saved.append(f"Sleep score: {metrics['sleep_score']}")
+            if metrics.get("sleep_duration_hr"): saved.append(f"Sleep: {metrics['sleep_duration_hr']}h")
+            if metrics.get("resting_hr_bpm"): saved.append(f"Resting HR: {metrics['resting_hr_bpm']}bpm")
+            if metrics.get("training_readiness_score"): saved.append(f"Readiness: {metrics['training_readiness_score']}")
+            if metrics.get("body_battery"): saved.append(f"Body Battery: {metrics['body_battery']}")
+            if metrics.get("vo2max"): saved.append(f"VO2max: {metrics['vo2max']}")
+
+            await update.message.reply_text(
+                "✅ *Garmin metrics saved:*\n" + "\n".join(f"  • {s}" for s in saved) +
+                "\n\nI'll use these in today's coaching.",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Garmin manual input error: {e}")
+            await update.message.reply_text("⚠️ Couldn't parse those metrics. Try: 'HRV 52 balanced, sleep 7h score 81, readiness 74'")
+
+    async def _fetch_live_strava(self) -> dict:
+        """Pull fresh Strava data before every conversation response."""
         import asyncio
         result = {}
         ftp = self.state.get_current_ftp() or 200
 
-        # Run both fetches concurrently so it's fast
         async def fetch_strava():
             try:
                 from clients.strava_client import StravaClient
                 strava = StravaClient()
                 summary = await asyncio.to_thread(strava.get_28_day_summary, ftp)
                 recent = await asyncio.to_thread(strava.get_recent_activities, 7)
-                # Log any new activities
                 for a in summary.get("activities", []):
                     self.state.log_activity(a)
                 self.state.recalculate_pmc()
                 result["strava"] = {
-                    "recent_activities": recent[:5],  # last 5 rides
+                    "recent_activities": recent[:5],
                     "28_day_summary": summary,
                 }
-                logger.info("[LiveData] Strava fetched")
+                logger.info("[LiveData] Strava fetched successfully")
             except Exception as e:
                 logger.warning(f"[LiveData] Strava fetch skipped: {e}")
 
-        async def fetch_garmin():
-            try:
-                from clients.garmin_client import GarminClient
-                garmin = GarminClient()
-                metrics = await asyncio.to_thread(garmin.get_todays_metrics)
-                if metrics.get("ftp_estimate_w"):
-                    self.state.record_ftp(metrics["ftp_estimate_w"], source="garmin")
-                if metrics.get("vo2max"):
-                    self.state.record_vo2max(metrics["vo2max"], source="garmin")
-                result["garmin"] = metrics
-                logger.info("[LiveData] Garmin fetched")
-            except Exception as e:
-                logger.warning(f"[LiveData] Garmin fetch skipped: {e}")
-
-        await asyncio.gather(fetch_strava(), fetch_garmin())
+        await fetch_strava()
         return result
 
     # ─── Helpers ──────────────────────────────────────────────────────────────

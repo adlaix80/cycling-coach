@@ -1,154 +1,80 @@
 """
 garmin_client.py
-Fetches physiological metrics from Garmin Connect:
-VO2max, FTP estimate, HRV status, sleep score, training readiness.
-Uses the garminconnect community library.
+Garmin data is no longer pulled automatically from the cloud —
+Garmin rate-limits logins from cloud server IPs.
+
+Instead, Garmin metrics are entered manually by the athlete via Telegram
+and stored in the coaching state. This file provides the data structure
+and helper to parse manual inputs.
+
+To log metrics, the athlete types in Telegram e.g.:
+  "Log garmin: HRV 45 balanced, sleep 7.5h score 78, readiness 72, resting HR 48"
+
+The coach parses and stores this automatically.
 """
 
-import os
-from datetime import date, timedelta
-from garminconnect import Garmin
-from dotenv import load_dotenv
-
-load_dotenv()
+from datetime import date
 
 
-class GarminClient:
-    def __init__(self):
-        self.email = os.getenv("GARMIN_EMAIL")
-        self.password = os.getenv("GARMIN_PASSWORD")
-        self._client = None
+def empty_metrics() -> dict:
+    """Return a blank Garmin metrics dict — used as fallback when no data available."""
+    return {
+        "date": date.today().isoformat(),
+        "vo2max": None,
+        "ftp_estimate_w": None,
+        "hrv_status": None,
+        "hrv_last_night_ms": None,
+        "sleep_score": None,
+        "sleep_duration_hr": None,
+        "resting_hr_bpm": None,
+        "training_readiness_score": None,
+        "training_readiness_level": None,
+        "body_battery": None,
+        "source": "manual",
+    }
 
-    def _connect(self):
-        """Authenticate and return a connected Garmin client."""
-        if self._client is None:
-            client = Garmin(self.email, self.password)
-            client.login()
-            self._client = client
-        return self._client
 
-    def get_todays_metrics(self) -> dict:
-        """
-        Pull today's key physiological metrics from Garmin Connect.
-        Returns a structured dict for use by the coach engine.
-        """
-        client = self._connect()
-        today = date.today().isoformat()
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+def parse_manual_garmin_input(text: str, client) -> dict:
+    """
+    Use Claude to extract Garmin metrics from a natural language message.
+    e.g. "HRV 45 balanced, sleep 7.5h score 78, readiness 72, resting HR 48"
+    Returns a metrics dict.
+    """
+    import json
+    import os
+    import anthropic
+    from dotenv import load_dotenv
+    load_dotenv()
 
-        metrics = {
-            "date": today,
-            "vo2max": None,
-            "ftp_estimate_w": None,
-            "hrv_status": None,
-            "hrv_last_night_ms": None,
-            "sleep_score": None,
-            "sleep_duration_hr": None,
-            "resting_hr_bpm": None,
-            "training_readiness_score": None,
-            "training_readiness_level": None,
-            "body_battery": None,
-        }
+    ai = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    prompt = f"""Extract Garmin metrics from this message. Return ONLY valid JSON, no markdown.
 
-        # --- VO2max ---
-        try:
-            vo2 = client.get_max_metrics(today)
-            if vo2 and isinstance(vo2, list) and len(vo2) > 0:
-                metrics["vo2max"] = vo2[0].get("generic", {}).get("vo2MaxValue")
-        except Exception as e:
-            print(f"[Garmin] VO2max fetch failed: {e}")
+Message: "{text}"
 
-        # --- FTP (Garmin cycling FTP estimate) ---
-        try:
-            perf = client.get_performance_stats(today)
-            if perf:
-                metrics["ftp_estimate_w"] = perf.get("ftpValue")
-        except Exception as e:
-            print(f"[Garmin] FTP fetch failed: {e}")
+JSON structure:
+{{
+  "vo2max": number or null,
+  "ftp_estimate_w": number or null,
+  "hrv_status": "BALANCED"|"UNBALANCED"|"POOR" or null,
+  "hrv_last_night_ms": number or null,
+  "sleep_score": number or null,
+  "sleep_duration_hr": number or null,
+  "resting_hr_bpm": number or null,
+  "training_readiness_score": number or null,
+  "training_readiness_level": "LOW"|"MODERATE"|"HIGH" or null,
+  "body_battery": number or null
+}}"""
 
-        # --- HRV ---
-        try:
-            hrv = client.get_hrv_data(today)
-            if hrv:
-                summary = hrv.get("hrvSummary", {})
-                metrics["hrv_status"] = summary.get("status")          # e.g. "BALANCED", "UNBALANCED"
-                metrics["hrv_last_night_ms"] = summary.get("lastNight")
-        except Exception as e:
-            print(f"[Garmin] HRV fetch failed: {e}")
-
-        # --- Sleep ---
-        try:
-            sleep = client.get_sleep_data(yesterday)  # last night = yesterday's date
-            if sleep:
-                daily = sleep.get("dailySleepDTO", {})
-                metrics["sleep_score"] = daily.get("sleepScores", {}).get("overall", {}).get("value")
-                sleep_sec = daily.get("sleepTimeSeconds", 0)
-                metrics["sleep_duration_hr"] = round(sleep_sec / 3600, 1) if sleep_sec else None
-        except Exception as e:
-            print(f"[Garmin] Sleep fetch failed: {e}")
-
-        # --- Resting HR ---
-        try:
-            rhr = client.get_rhr_day(today)
-            if rhr:
-                metrics["resting_hr_bpm"] = rhr.get("allDayHR", {}).get("restingHeartRate")
-        except Exception as e:
-            print(f"[Garmin] Resting HR fetch failed: {e}")
-
-        # --- Training Readiness ---
-        try:
-            readiness = client.get_training_readiness(today)
-            if readiness and isinstance(readiness, list) and len(readiness) > 0:
-                r = readiness[0]
-                metrics["training_readiness_score"] = r.get("score")
-                metrics["training_readiness_level"] = r.get("level")  # e.g. "LOW", "MODERATE", "HIGH"
-        except Exception as e:
-            print(f"[Garmin] Training readiness fetch failed: {e}")
-
-        # --- Body Battery ---
-        try:
-            bb = client.get_body_battery(today)
-            if bb and isinstance(bb, list) and len(bb) > 0:
-                readings = bb[0].get("bodyBatteryValuesArray", [])
-                if readings:
-                    metrics["body_battery"] = readings[-1][1]  # latest value
-        except Exception as e:
-            print(f"[Garmin] Body battery fetch failed: {e}")
-
-        return metrics
-
-    def get_vo2max_history(self, days: int = 90) -> list[dict]:
-        """
-        Fetch VO2max history over the last N days.
-        Returns list of {date, vo2max} for trend analysis.
-        """
-        client = self._connect()
-        history = []
-        for i in range(days, 0, -7):  # weekly samples
-            d = (date.today() - timedelta(days=i)).isoformat()
-            try:
-                vo2 = client.get_max_metrics(d)
-                if vo2 and isinstance(vo2, list) and len(vo2) > 0:
-                    val = vo2[0].get("generic", {}).get("vo2MaxValue")
-                    if val:
-                        history.append({"date": d, "vo2max": val})
-            except Exception:
-                continue
-        return history
-
-    def get_ftp_history(self, days: int = 90) -> list[dict]:
-        """
-        Fetch Garmin FTP estimate history over the last N days.
-        Returns list of {date, ftp_w} for trend analysis.
-        """
-        client = self._connect()
-        history = []
-        for i in range(days, 0, -7):
-            d = (date.today() - timedelta(days=i)).isoformat()
-            try:
-                perf = client.get_performance_stats(d)
-                if perf and perf.get("ftpValue"):
-                    history.append({"date": d, "ftp_w": perf["ftpValue"]})
-            except Exception:
-                continue
-        return history
+    response = ai.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    raw = response.content[0].text.strip()
+    try:
+        parsed = json.loads(raw)
+        parsed["date"] = date.today().isoformat()
+        parsed["source"] = "manual"
+        return parsed
+    except Exception:
+        return empty_metrics()
